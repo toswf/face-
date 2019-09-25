@@ -218,7 +218,7 @@ cv::Mat correct_colours(cv::Mat& im1, cv::Mat& im2, nc::NdArray<double>& landmar
 
 cv::Mat convertTo3Channels(const cv::Mat& binImg)
 {
-	cv::Mat three_channel = cv::Mat::zeros(binImg.rows, binImg.cols, CV_8UC3);
+	cv::Mat three_channel = cv::Mat::zeros(binImg.rows, binImg.cols, CV_32F);
 	std::vector<cv::Mat> channels;
 	for (int i = 0; i < 3; i++)
 	{
@@ -251,13 +251,13 @@ int main()
 
 	try {
 		// Load face detection and pose estimation models.
-		deserialize("D:\\face\\test\\face\\x64\\Release\\shape_predictor_68_face_landmarks.dat") >> predictor;
+		deserialize("C:\\Project\\faceC++\\face\\face\\x64\\Release\\shape_predictor_68_face_landmarks.dat") >> predictor;
 		cv::Mat output1;
 		nc::NdArray<double> landmark1;
-		read_im_and_landmarks("D:\\face\\test\\face\\x64\\Release\\1.jpg", output1, landmark1);
+		read_im_and_landmarks("C:\\Project\\faceC++\\face\\face\\x64\\Release\\1.jpg", output1, landmark1);
 		cv::Mat output2;
 		nc::NdArray<double> landmark2;
-		read_im_and_landmarks("D:\\face\\test\\face\\x64\\Release\\3.jpg", output2, landmark2);
+		read_im_and_landmarks("C:\\Project\\faceC++\\face\\face\\x64\\Release\\3.jpg", output2, landmark2);
 
 		size_t len = sizeof(ALIGN_POINTS) / sizeof(int);
 		nc::NdArray<double> tmp1(len, 2);
@@ -292,22 +292,28 @@ int main()
 		auto warped_mask = wrap_im(mask, M, shape);//CV_64FC1
 		cv::Mat combined_mask;
 		cv::max(mask2, warped_mask, combined_mask);
+		
 		auto warped_im2 = wrap_im(output2, M, shape);//CV_64FC1
 		auto warped_corrected_im2 = correct_colours(output1, warped_im2, landmark1);
 		warped_corrected_im2.convertTo(warped_corrected_im2, CV_8UC3);
 		cv::Mat out1, out2;
-		cv::imshow("combined_mask", combined_mask);
-		auto comb = 1.0 - combined_mask;
-		cv::imshow("comb", comb);
-		auto comb3 = convertTo3Channels(comb);
+		combined_mask.convertTo(combined_mask, CV_32F);
+		//cout << combined_mask/255 << endl;
+		cv::Mat comb = 1.0 - combined_mask / 255;
+		cv::Mat comb3 = convertTo3Channels(comb);
+		output1.convertTo(output1, CV_32F);
 		cv::multiply(output1, comb3, out1);
+		out1.convertTo(out1, CV_8UC3);
 		cv::imshow("out1", out1);
-		auto comb4 = convertTo3Channels(combined_mask);
-		cv::multiply(warped_corrected_im2, comb4 / comb4, out2);
+
+		auto comb4 = convertTo3Channels(combined_mask/255);
+		warped_corrected_im2.convertTo(warped_corrected_im2, CV_32F);
+		cv::multiply(warped_corrected_im2, comb4, out2);
+		out2.convertTo(out2, CV_8UC3);
 		cv::imshow("out2", out2);
 		cv::Mat output_im = out1 + out2;
 		cv::imshow("output", output_im);
-		cv::imwrite("D:\\face\\test\\face\\x64\\Release\\output.jpg", output_im);
+		cv::imwrite("C:\\Project\\faceC++\\face\\face\\x64\\Release\\output.jpg", output_im);
 		cv::waitKey(0);
 	}
 	catch (error e)
