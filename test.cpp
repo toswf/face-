@@ -1,5 +1,12 @@
 ﻿//author:niuhao
 //
+#ifdef _WIN32
+#include <winsock2.h>
+#include <time.h>
+#else
+#include <sys/time.h>
+#endif
+
 #include <iostream>
 #include<string.h>
 #include <array>
@@ -14,6 +21,13 @@
 #include "opencv2/highgui.hpp"
 #include <dlib/image_io.h>
 #include <opencv2/opencv.hpp>
+#include <sstream>
+#include <dlib/server.h>
+#include <cstdlib>
+#include <dlib/compress_stream.h>
+#include <dlib/base64.h>
+
+
 
 using namespace dlib;
 using namespace std;
@@ -99,12 +113,12 @@ nc::NdArray<double> transformation_from_points(nc::NdArray<double> points1, nc::
 		p2.at(i, 0) -= c2.at(0, 0);
 		p2.at(i, 1) -= c2.at(0, 1);
 	}
-	cout << p1 << endl;
+	//cout << p1 << endl;
 	auto s1 = nc::stdev(p1);
 	auto s2 = nc::stdev(p2);
 	p1 /= s1.at(0, 0);
 	p2 /= s2.at(0, 0);
-	cout << p1 << endl;
+	//cout << p1 << endl;
 	nc::NdArray<double> outU;
 	nc::NdArray<double> outS;
 	nc::NdArray<double> outVt;
@@ -113,9 +127,9 @@ nc::NdArray<double> transformation_from_points(nc::NdArray<double> points1, nc::
 	auto R = (outU.dot(outVt)).transpose();
 	auto per = s2.at(0, 0) / s1.at(0, 0);
 	auto pp1 = R * per;
-	cout << pp1 << endl;
-	cout << c1 << endl;
-	cout << c2 << endl;
+	//cout << pp1 << endl;
+	//cout << c1 << endl;
+	//cout << c2 << endl;
 	auto p = pp1.dot(c1.transpose());
 	auto pp = p.astype<double>();
 	auto pp2 = c2.transpose() - pp;
@@ -131,7 +145,13 @@ void read_im_and_landmarks(std::string fname, cv::Mat& output, nc::NdArray<doubl
 {
 	array2d<bgr_pixel> im;
 	load_image(im, fname);
-	auto rects = detector(im, 1);
+	if (im.nc() > 600)
+	{
+		double per = 600.0f / im.nc();
+		resize_image(per, im);
+	}
+	std::vector<dlib::rectangle> rects = detector(im, 1);;
+	
 	if (rects.size() > 1)
 	{
 		throw std::exception("too mang faces");
@@ -140,7 +160,7 @@ void read_im_and_landmarks(std::string fname, cv::Mat& output, nc::NdArray<doubl
 	{
 		throw std::exception("no faces");
 	}
-	std::cout << "find face!" << std::endl;
+	//std::cout << "find face!" << std::endl;
 
 	auto parts = predictor(im, rects[0]);
 	int index = 0;
@@ -231,8 +251,175 @@ cv::Mat convertTo3Channels(const cv::Mat& binImg)
 //版权声明：本文为CSDN博主「wx7788250」的原创文章，遵循 CC 4.0 BY - SA 版权协议，转载请附上原文出处链接及本声明。
 //原文链接：https ://blog.csdn.net/wx7788250/article/details/70261615
 
-int main()
+void process(string file1, string file2, string output)
 {
+
+	cv::Mat output1;
+	nc::NdArray<double> landmark1;
+	read_im_and_landmarks(file1, output1, landmark1);
+	cv::Mat output2;
+	nc::NdArray<double> landmark2;
+	read_im_and_landmarks(file2, output2, landmark2);
+	size_t len = sizeof(ALIGN_POINTS) / sizeof(int);
+	nc::NdArray<double> tmp1(len, 2);
+	//cout << landmark1 << endl;
+
+	for (size_t j = 0; j < len; j++)
+	{
+		int index = ALIGN_POINTS[j];
+		auto x = landmark1(index, 0);
+		auto y = landmark1(index, 1);
+		tmp1.put(j, 0, x);
+		tmp1.put(j, 1, y);
+	}
+	nc::NdArray<double> tmp2(len, 2);
+
+	for (size_t j = 0; j < len; j++)
+	{
+		int index = ALIGN_POINTS[j];
+		auto x = landmark2(index, 0);
+		auto y = landmark2(index, 1);
+		tmp2.put(j, 0, x);
+		tmp2.put(j, 1, y);
+	}
+	//cout << tmp1 << endl;
+	auto t1 = cv::Mat(tmp1.numRows(), tmp1.numCols(), CV_64FC1, tmp1.data());
+	auto t2 = cv::Mat(tmp2.numRows(), tmp2.numCols(), CV_64FC1, tmp2.data());
+	nc::NdArray<double> M = transformation_from_points(tmp1, tmp2);
+	//cout << M << endl;
+	auto mask = get_face_mask(output2, landmark2); ///CV_64FC1
+	auto mask2 = get_face_mask(output1, landmark1);///CV_64FC1
+	nc::Shape shape(output1.rows, output1.cols);
+	auto warped_mask = wrap_im(mask, M, shape);//CV_64FC1
+	cv::Mat combined_mask;
+	cv::max(mask2, warped_mask, combined_mask);
+
+	auto warped_im2 = wrap_im(output2, M, shape);//CV_64FC1
+	auto warped_corrected_im2 = correct_colours(output1, warped_im2, landmark1);
+	warped_corrected_im2.convertTo(warped_corrected_im2, CV_8UC3);
+	cv::Mat out1, out2;
+	combined_mask.convertTo(combined_mask, CV_32F);
+	//cout << combined_mask/255 << endl;
+	cv::Mat comb = 1.0 - combined_mask / 255;
+	cv::Mat comb3 = convertTo3Channels(comb);
+	output1.convertTo(output1, CV_32F);
+	cv::multiply(output1, comb3, out1);
+	out1.convertTo(out1, CV_8UC3);
+	//cv::imshow("out1", out1);
+
+	auto comb4 = convertTo3Channels(combined_mask / 255);
+	warped_corrected_im2.convertTo(warped_corrected_im2, CV_32F);
+	cv::multiply(warped_corrected_im2, comb4, out2);
+	out2.convertTo(out2, CV_8UC3);
+	//cv::imshow("out2", out2);
+	cv::Mat output_im = out1 + out2;
+	//cv::imshow("output", output_im);
+	cv::imwrite(output, output_im);
+}
+
+//替换全部字符串
+void replaceAll(std::string& strSource, const std::string& strOld, const std::string& strNew)
+{
+	int nPos = 0;
+	while ((nPos = strSource.find(strOld, nPos)) != strSource.npos)
+	{
+		strSource.replace(nPos, strOld.length(), strNew);
+		nPos += strNew.length();
+	}
+}
+
+
+
+string GetCurrentTimeMsec()
+{
+	stringstream ss;
+#ifdef _WIN32
+	struct timeval tv;
+	time_t clock;
+	struct tm tm;
+	SYSTEMTIME wtm;
+	GetLocalTime(&wtm);
+	tm.tm_year = wtm.wYear - 1900;
+	tm.tm_mon = wtm.wMonth - 1;
+	tm.tm_mday = wtm.wDay;
+	tm.tm_hour = wtm.wHour;
+	tm.tm_min = wtm.wMinute;
+	tm.tm_sec = wtm.wSecond;
+	tm.tm_isdst = -1;
+	clock = mktime(&tm);
+	tv.tv_sec = clock;
+	tv.tv_usec = wtm.wMilliseconds * 1000;
+	auto ms =  ((unsigned long long)tv.tv_sec * 1000 + (unsigned long long)tv.tv_usec / 1000);
+	ss << ms << endl;
+#else
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	auto ms =  ((unsigned long long)tv.tv_sec * 1000 + (unsigned long long)tv.tv_usec / 1000);
+	ss << ms << endl;
+#endif
+	return ss.str();
+}
+
+//-------------------- -
+//作者：先亮
+//来源：CSDN
+//原文：https ://blog.csdn.net/sunxianliang1/article/details/52150365 
+//版权声明：本文为博主原创文章，转载请附上博文链接！
+
+std::string save(string& file, int index)
+{
+	
+	string tick = GetCurrentTimeMsec();
+	ostringstream in;
+	in << "images/" << tick << "_" << index << ".jpg" << endl;
+	replaceAll(file, " ", "+");
+	replaceAll(file, "data:image/jpeg;base64,", "");
+	base64 base64_coder;
+	ostringstream sout;
+	istringstream sin;
+	sin.str(file);
+	base64_coder.decode(sin, sout);
+	ofstream f;
+	f.open(in.str(), ios::out);
+	f.write(sout.str().c_str(), strlen(sout.str().c_str()));
+	f.close();
+	return in.str();
+}
+
+class web_server : public server_http
+{
+	const std::string on_request(
+		const incoming_things& incoming,
+		outgoing_things& outgoing
+	)
+	{
+		ostringstream sout;
+		auto file1 = incoming.queries["f1"];
+		auto file2 = incoming.queries["f2"];
+		auto file3 = incoming.queries["f3"];
+		process(file1, file2, file3);
+		sout << "success" << endl;
+		return sout.str();
+	}
+
+};
+
+
+
+int main(int argc, char* argv[])
+{
+	//if (argc < 3)
+	{
+		//printf("%s", "the args is too less");
+		//return -1;
+	}
+
+	//string file1(argv[1]);
+	//string file2(argv[2]);
+	//string file3(argv[3]);
+	//string file1 = "C:\\Project\\faceC++\\face\\face\\x64\\Release\\5.jpg";
+	//string file2 = "C:\\Project\\faceC++\\face\\face\\x64\\Release\\1.jpg";
+	//string file3 = "C:\\Project\\faceC++\\face\\face\\x64\\Release\\output.jpg";
 	int s = sizeof(int);
 	memcpy(ALIGN_POINTS, LEFT_BROW_POINTS, sizeof(LEFT_BROW_POINTS));
 	memcpy(&ALIGN_POINTS[5], RIGHT_EYE_POINTS, sizeof(RIGHT_EYE_POINTS));
@@ -251,85 +438,27 @@ int main()
 
 	try {
 		// Load face detection and pose estimation models.
-		deserialize("C:\\Project\\faceC++\\face\\face\\x64\\Release\\shape_predictor_68_face_landmarks.dat") >> predictor;
-		cv::Mat output1;
-		nc::NdArray<double> landmark1;
-		read_im_and_landmarks("C:\\Project\\faceC++\\face\\face\\x64\\Release\\1.jpg", output1, landmark1);
-		cv::Mat output2;
-		nc::NdArray<double> landmark2;
-		read_im_and_landmarks("C:\\Project\\faceC++\\face\\face\\x64\\Release\\3.jpg", output2, landmark2);
+		//deserialize("C:\\Project\\faceC++\\face\\face\\x64\\Release\\shape_predictor_68_face_landmarks.dat") >> predictor;
+		deserialize("shape_predictor_68_face_landmarks.dat") >> predictor;
+		// create an instance of our web server
+		web_server our_web_server;
+		// make it listen on port 5000
+		our_web_server.set_listening_port(8089);
+		// Tell the server to begin accepting connections.
+		our_web_server.start_async();
+		cout << "Press enter to end this program" << endl;
+		cin.get();
+		//process(file1, file2, file3);
+		//cv::waitKey();
 
-		size_t len = sizeof(ALIGN_POINTS) / sizeof(int);
-		nc::NdArray<double> tmp1(len, 2);
-		cout << landmark1 << endl;
-
-		for (size_t j = 0; j < len; j++)
-		{
-			int index = ALIGN_POINTS[j];
-			auto x = landmark1(index, 0);
-			auto y = landmark1(index, 1);
-			tmp1.put(j, 0, x);
-			tmp1.put(j, 1, y);
-		}
-		nc::NdArray<double> tmp2(len, 2);
-
-		for (size_t j = 0; j < len; j++)
-		{
-			int index = ALIGN_POINTS[j];
-			auto x = landmark2(index, 0);
-			auto y = landmark2(index, 1);
-			tmp2.put(j, 0, x);
-			tmp2.put(j, 1, y);
-		}
-		cout << tmp1 << endl;
-		auto t1 = cv::Mat(tmp1.numRows(), tmp1.numCols(), CV_64FC1, tmp1.data());
-		auto t2 = cv::Mat(tmp2.numRows(), tmp2.numCols(), CV_64FC1, tmp2.data());
-		nc::NdArray<double> M = transformation_from_points(tmp1, tmp2);
-		cout << M << endl;
-		auto mask = get_face_mask(output2, landmark2); ///CV_64FC1
-		auto mask2 = get_face_mask(output1, landmark1);///CV_64FC1
-		nc::Shape shape(output1.rows, output1.cols);
-		auto warped_mask = wrap_im(mask, M, shape);//CV_64FC1
-		cv::Mat combined_mask;
-		cv::max(mask2, warped_mask, combined_mask);
-		
-		auto warped_im2 = wrap_im(output2, M, shape);//CV_64FC1
-		auto warped_corrected_im2 = correct_colours(output1, warped_im2, landmark1);
-		warped_corrected_im2.convertTo(warped_corrected_im2, CV_8UC3);
-		cv::Mat out1, out2;
-		combined_mask.convertTo(combined_mask, CV_32F);
-		//cout << combined_mask/255 << endl;
-		cv::Mat comb = 1.0 - combined_mask / 255;
-		cv::Mat comb3 = convertTo3Channels(comb);
-		output1.convertTo(output1, CV_32F);
-		cv::multiply(output1, comb3, out1);
-		out1.convertTo(out1, CV_8UC3);
-		cv::imshow("out1", out1);
-
-		auto comb4 = convertTo3Channels(combined_mask/255);
-		warped_corrected_im2.convertTo(warped_corrected_im2, CV_32F);
-		cv::multiply(warped_corrected_im2, comb4, out2);
-		out2.convertTo(out2, CV_8UC3);
-		cv::imshow("out2", out2);
-		cv::Mat output_im = out1 + out2;
-		cv::imshow("output", output_im);
-		cv::imwrite("C:\\Project\\faceC++\\face\\face\\x64\\Release\\output.jpg", output_im);
-		cv::waitKey(0);
 	}
 	catch (error e)
 	{
-		std::cout << "error：";
-		std::cout << e.what() << std::endl;
-		sleep(10000);
+		printf("%s", e.what());
 	}
 	catch (std::exception e)
 	{
-		std::cout << "error：";
-		std::cout << e.what() << std::endl;
-		sleep(10000);
+		printf("%s", e.what());
 	}
 
 }
-
-
-
